@@ -35,6 +35,24 @@ RUNTIME_DIR="/tmp/runtime-ubuntu"
 SELKIES_LOG="/var/log/cc-selkies.log"
 DIAG_LOG="/tmp/cc-diag.log"
 
+# Vast applies our per-instance `-e` vars to the container's PID 1 (its
+# /.launch), but does NOT cascade them into the onstart shell that runs this
+# script. So SELKIES_BASIC_AUTH_PASSWORD (the password the dashboard shows the
+# user) is empty here, and the Selkies entrypoint silently falls back to the
+# image default PASSWD=mypasswd — i.e. the shown password wouldn't work.
+# Recover the vars straight from PID 1's environment so the htpasswd the
+# container builds matches what the user sees.
+pid1_env() { tr '\0' '\n' < /proc/1/environ 2>/dev/null | sed -n "s/^$1=//p" | head -n1; }
+: "${SELKIES_BASIC_AUTH_PASSWORD:=$(pid1_env SELKIES_BASIC_AUTH_PASSWORD)}"
+: "${SELKIES_ENCODER:=$(pid1_env SELKIES_ENCODER)}"
+: "${SELKIES_ENABLE_BASIC_AUTH:=$(pid1_env SELKIES_ENABLE_BASIC_AUTH)}"
+: "${SELKIES_TURN_PROTOCOL:=$(pid1_env SELKIES_TURN_PROTOCOL)}"
+: "${SELKIES_TURN_PORT:=$(pid1_env SELKIES_TURN_PORT)}"
+: "${TURN_MIN_PORT:=$(pid1_env TURN_MIN_PORT)}"
+: "${TURN_MAX_PORT:=$(pid1_env TURN_MAX_PORT)}"
+: "${DISPLAY_SIZEW:=$(pid1_env DISPLAY_SIZEW)}"
+: "${DISPLAY_SIZEH:=$(pid1_env DISPLAY_SIZEH)}"
+
 # report <stage> [progress_pct] [message]
 report() {
   [ -z "$CC_PROVISION_URL" ] && return 0
