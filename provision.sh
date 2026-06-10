@@ -91,39 +91,43 @@ PY
   exit 1
 }
 
-# Run a command as the desktop user with a clean, explicit environment. Using
-# `runuser` (root->ubuntu, no password) + `env -i` removes all ambiguity about
-# whether the container env survived Vast's image rebuild: we set every var the
-# Selkies supervisord/entrypoint needs from the known image defaults.
-as_user() {
-  runuser -u "$GAME_USER" -- env -i \
-    HOME="/home/$GAME_USER" \
-    USER="$GAME_USER" \
-    LOGNAME="$GAME_USER" \
-    SHELL=/bin/bash \
-    PATH="/usr/local/nvidia/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    DISPLAY="$GAME_DISPLAY" \
-    XDG_RUNTIME_DIR="$RUNTIME_DIR" \
-    DBUS_SYSTEM_BUS_ADDRESS="unix:path=$RUNTIME_DIR/dbus-system-bus" \
-    PULSE_RUNTIME_PATH="$RUNTIME_DIR/pulse" \
-    PULSE_SERVER="unix:$RUNTIME_DIR/pulse/native" \
-    PIPEWIRE_RUNTIME_DIR="$RUNTIME_DIR" \
-    LANG=en_US.UTF-8 \
-    NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=all \
-    DISPLAY_SIZEW="${DISPLAY_SIZEW:-1920}" \
-    DISPLAY_SIZEH="${DISPLAY_SIZEH:-1080}" \
-    DISPLAY_REFRESH=60 DISPLAY_DPI=96 DISPLAY_CDEPTH=24 \
-    KASMVNC_ENABLE=false \
-    SELKIES_ENCODER="${SELKIES_ENCODER:-nvh264enc}" \
-    SELKIES_ENABLE_BASIC_AUTH="${SELKIES_ENABLE_BASIC_AUTH:-true}" \
-    SELKIES_BASIC_AUTH_PASSWORD="${SELKIES_BASIC_AUTH_PASSWORD:-}" \
-    SELKIES_TURN_PROTOCOL="${SELKIES_TURN_PROTOCOL:-tcp}" \
-    SELKIES_TURN_PORT="${SELKIES_TURN_PORT:-3478}" \
-    TURN_MIN_PORT="${TURN_MIN_PORT:-65532}" \
-    TURN_MAX_PORT="${TURN_MAX_PORT:-65535}" \
-    "$@"
-}
+# Clean, explicit environment for the desktop user. Using `runuser`
+# (root->ubuntu, no password) + `env -i` + this fixed list removes all ambiguity
+# about whether the container env survived Vast's image rebuild — we set every
+# var the Selkies supervisord/entrypoint needs from the known image defaults.
+#
+# This is a plain array (not a function): it's expanded inline into the
+# `nohup runuser ... env -i "${SELKIES_ENV[@]}" <cmd>` calls below, because
+# `nohup` can only launch a real executable, not a shell function.
+SELKIES_ENV=(
+  "HOME=/home/$GAME_USER"
+  "USER=$GAME_USER"
+  "LOGNAME=$GAME_USER"
+  "SHELL=/bin/bash"
+  "PATH=/usr/local/nvidia/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  "DISPLAY=$GAME_DISPLAY"
+  "XDG_RUNTIME_DIR=$RUNTIME_DIR"
+  "DBUS_SYSTEM_BUS_ADDRESS=unix:path=$RUNTIME_DIR/dbus-system-bus"
+  "PULSE_RUNTIME_PATH=$RUNTIME_DIR/pulse"
+  "PULSE_SERVER=unix:$RUNTIME_DIR/pulse/native"
+  "PIPEWIRE_RUNTIME_DIR=$RUNTIME_DIR"
+  "LANG=en_US.UTF-8"
+  "NVIDIA_VISIBLE_DEVICES=all"
+  "NVIDIA_DRIVER_CAPABILITIES=all"
+  "DISPLAY_SIZEW=${DISPLAY_SIZEW:-1920}"
+  "DISPLAY_SIZEH=${DISPLAY_SIZEH:-1080}"
+  "DISPLAY_REFRESH=60"
+  "DISPLAY_DPI=96"
+  "DISPLAY_CDEPTH=24"
+  "KASMVNC_ENABLE=false"
+  "SELKIES_ENCODER=${SELKIES_ENCODER:-nvh264enc}"
+  "SELKIES_ENABLE_BASIC_AUTH=${SELKIES_ENABLE_BASIC_AUTH:-true}"
+  "SELKIES_BASIC_AUTH_PASSWORD=${SELKIES_BASIC_AUTH_PASSWORD:-}"
+  "SELKIES_TURN_PROTOCOL=${SELKIES_TURN_PROTOCOL:-tcp}"
+  "SELKIES_TURN_PORT=${SELKIES_TURN_PORT:-3478}"
+  "TURN_MIN_PORT=${TURN_MIN_PORT:-65532}"
+  "TURN_MAX_PORT=${TURN_MAX_PORT:-65535}"
+)
 
 # --- Stage 1: bring up the desktop/stream + install the game ---------------
 report "install_game" 10
@@ -133,7 +137,8 @@ if [ ! -f /etc/supervisord.conf ] || [ ! -x /usr/bin/supervisord ]; then
 fi
 
 install -d -o "$GAME_USER" -g "$GAME_USER" -m 700 "$RUNTIME_DIR"
-nohup as_user /usr/bin/supervisord -c /etc/supervisord.conf > "$SELKIES_LOG" 2>&1 &
+nohup runuser -u "$GAME_USER" -- env -i "${SELKIES_ENV[@]}" \
+  /usr/bin/supervisord -c /etc/supervisord.conf > "$SELKIES_LOG" 2>&1 &
 
 # Fail fast if supervisord didn't even come up (e.g. it can't write its socket),
 # instead of waiting out the full X timeout below.
@@ -171,7 +176,8 @@ if [ ! -S "/tmp/.X11-unix/X20" ]; then
   fail "start_game" "desktop session (:20) did not start in time"
 fi
 
-nohup as_user supertuxkart --fullscreen > /var/log/cc-supertuxkart.log 2>&1 &
+nohup runuser -u "$GAME_USER" -- env -i "${SELKIES_ENV[@]}" \
+  supertuxkart --fullscreen > /var/log/cc-supertuxkart.log 2>&1 &
 
 # Don't stamp completion until the Selkies web server actually accepts
 # connections on :8080 — the "Играть" button is provision-marker gated (a plain
