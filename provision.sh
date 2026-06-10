@@ -78,7 +78,43 @@ collect_diag() {
     echo "===== /tmp/entrypoint.log (tail) ====="; tail -n 160 /tmp/entrypoint.log 2>&1
     echo "===== $SELKIES_LOG (tail) ====="; tail -n 80 "$SELKIES_LOG" 2>&1
     echo "===== /tmp/selkies-gstreamer-entrypoint.log (tail) ====="; tail -n 80 /tmp/selkies-gstreamer-entrypoint.log 2>&1
+    echo "===== basic-auth ====="
+    echo "recovered SELKIES_BASIC_AUTH_PASSWORD length: ${#SELKIES_BASIC_AUTH_PASSWORD}"
+    echo "PID1 SELKIES_/PASSWD/USER env (name + value length, values masked):"
+    tr '\0' '\n' < /proc/1/environ 2>/dev/null \
+      | awk -F= '/^(SELKIES_|PASSWD=|USER=)/ {v=$0; sub(/^[^=]+=/,"",v); print $1" len="length(v)}'
+    echo "htpasswd file first field ($RUNTIME_DIR/.htpasswd):"
+    cut -d: -f1 "$RUNTIME_DIR/.htpasswd" 2>&1
+    echo "verify recovered password against htpasswd:"
+    htpasswd -vb "$RUNTIME_DIR/.htpasswd" "$GAME_USER" "${SELKIES_BASIC_AUTH_PASSWORD:-}" 2>&1
   } > "$DIAG_LOG" 2>&1 || true
+}
+
+# Post a stage update carrying the diagnostics as app_log_tail (no `message`, so
+# it is NOT treated as a fatal failure) — used to surface the auth state even
+# when the boot succeeds.
+report_diag() {
+  local stage="$1"
+  collect_diag
+  [ -z "$CC_PROVISION_URL" ] && return 0
+  python3 - "$CC_PROVISION_URL" "$CC_AGENT_TOKEN" "$stage" "$DIAG_LOG" <<'PY' || true
+import sys, json, urllib.request
+url, token, stage, logfile = sys.argv[1:5]
+body = {"stage": stage}
+try:
+    with open(logfile, "r", errors="replace") as f:
+        body["app_log_tail"] = f.read()[-60000:]
+except Exception:
+    pass
+req = urllib.request.Request(
+    url, data=json.dumps(body).encode(),
+    headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+)
+try:
+    urllib.request.urlopen(req, timeout=15).read()
+except Exception:
+    pass
+PY
 }
 
 # fail <stage> <message> — collect diagnostics and POST them as app_log_tail so
@@ -208,6 +244,11 @@ done
 if ! nc -z localhost 8080 >/dev/null 2>&1; then
   fail "start_game" "stream server (:8080) did not come up in time"
 fi
+
+# Surface the basic-auth state (recovered-password length, htpasswd user, and a
+# real htpasswd -vb verification) in the app log even on success, so a
+# credentials mismatch is diagnosable without another blind round-trip.
+report_diag "start_game"
 
 # Final stage + progress 100 => the dashboard stamps completed_at.
 report "start_game" 100
