@@ -50,6 +50,12 @@ pid1_env() { tr '\0' '\n' < /proc/1/environ 2>/dev/null | sed -n "s/^$1=//p" | h
 : "${SELKIES_TURN_PORT:=$(pid1_env SELKIES_TURN_PORT)}"
 : "${TURN_MIN_PORT:=$(pid1_env TURN_MIN_PORT)}"
 : "${TURN_MAX_PORT:=$(pid1_env TURN_MAX_PORT)}"
+# coTURN must advertise an address the browser can reach. On Vast the container's
+# private IP is useless externally, so pin the TURN host to the instance's public
+# IP (Vast injects PUBLIC_IPADDR on PID 1). The TURN ports are >= 70000 so Vast
+# maps them 1:1 (external == internal) — see config/applications.php.
+: "${SELKIES_TURN_HOST:=$(pid1_env SELKIES_TURN_HOST)}"
+: "${SELKIES_TURN_HOST:=$(pid1_env PUBLIC_IPADDR)}"
 : "${DISPLAY_SIZEW:=$(pid1_env DISPLAY_SIZEW)}"
 : "${DISPLAY_SIZEH:=$(pid1_env DISPLAY_SIZEH)}"
 
@@ -76,6 +82,19 @@ collect_diag() {
     echo "SELKIES_ENCODER=${SELKIES_ENCODER:-}"
     ls -l /usr/lib/x86_64-linux-gnu/libnvidia-encode.so* 2>&1
     gst-inspect-1.0 nvh264enc >/dev/null 2>&1 && echo "nvh264enc: usable" || echo "nvh264enc: NOT usable"
+    echo "===== turn / ports ====="
+    echo "advertised: SELKIES_TURN_HOST=${SELKIES_TURN_HOST:-} SELKIES_TURN_PORT=${SELKIES_TURN_PORT:-} SELKIES_TURN_PROTOCOL=${SELKIES_TURN_PROTOCOL:-}"
+    echo "relay range: TURN_MIN_PORT=${TURN_MIN_PORT:-} TURN_MAX_PORT=${TURN_MAX_PORT:-}"
+    echo "-- Vast external port map + public IP (PID1) --"
+    tr '\0' '\n' < /proc/1/environ 2>/dev/null | grep -E '^(VAST_(TCP|UDP)_PORT_|PUBLIC_IPADDR=)' | sort
+    echo "-- coturn process --"
+    ps aux 2>/dev/null | grep -i '[t]urnserver'
+    echo "-- coturn config --"
+    cat /etc/coturn/turnserver.conf 2>/dev/null \
+      || cat /etc/turnserver.conf 2>/dev/null \
+      || echo "(no turnserver.conf found)"
+    echo "-- listening sockets (70000-70004) --"
+    { ss -tulpn 2>/dev/null || netstat -tulpn 2>/dev/null; } | grep -E ':7000[0-4]\b' || echo "(none bound)"
     echo "===== /tmp/.X11-unix ====="; ls -la /tmp/.X11-unix 2>&1
     echo "===== supervisorctl status ====="; supervisorctl -c /etc/supervisord.conf status 2>&1
     echo "===== /tmp/supervisord.log (tail) ====="; tail -n 100 /tmp/supervisord.log 2>&1
@@ -212,10 +231,11 @@ SELKIES_ENV=(
   "SELKIES_ENCODER=${SELKIES_ENCODER:-nvh264enc}"
   "SELKIES_ENABLE_BASIC_AUTH=${SELKIES_ENABLE_BASIC_AUTH:-true}"
   "SELKIES_BASIC_AUTH_PASSWORD=${SELKIES_BASIC_AUTH_PASSWORD:-}"
+  "SELKIES_TURN_HOST=${SELKIES_TURN_HOST:-}"
   "SELKIES_TURN_PROTOCOL=${SELKIES_TURN_PROTOCOL:-tcp}"
-  "SELKIES_TURN_PORT=${SELKIES_TURN_PORT:-3478}"
-  "TURN_MIN_PORT=${TURN_MIN_PORT:-65532}"
-  "TURN_MAX_PORT=${TURN_MAX_PORT:-65535}"
+  "SELKIES_TURN_PORT=${SELKIES_TURN_PORT:-70000}"
+  "TURN_MIN_PORT=${TURN_MIN_PORT:-70001}"
+  "TURN_MAX_PORT=${TURN_MAX_PORT:-70004}"
 )
 
 # --- Stage 1: bring up the desktop/stream + install the game ---------------
