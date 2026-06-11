@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SuperTuxKart cloud-gaming provisioner (cloudcompute.ru).
 #
-# Runs on the Selkies nvidia-egl-desktop image at instance boot, fetched and
+# Runs on the Selkies nvidia-glx-desktop image at instance boot, fetched and
 # launched by the CloudCompute onstart wrapper. It:
 #   1. Starts the Selkies desktop/stream stack (supervisord) — see below.
 #   2. Installs SuperTuxKart.
@@ -52,12 +52,36 @@ pid1_env() { tr '\0' '\n' < /proc/1/environ 2>/dev/null | sed -n "s/^$1=//p" | h
 : "${TURN_MAX_PORT:=$(pid1_env TURN_MAX_PORT)}"
 # coTURN must advertise an address the browser can reach. On Vast the container's
 # private IP is useless externally, so pin the TURN host to the instance's public
-# IP (Vast injects PUBLIC_IPADDR on PID 1). The TURN ports are >= 70000 so Vast
-# maps them 1:1 (external == internal) — see config/applications.php.
+# IP (Vast injects PUBLIC_IPADDR on PID 1). Even on static_ip hosts Vast often
+# remaps container ports to random externals — map_vast_turn_ports() below sets
+# SELKIES_TURN_PORT from VAST_TCP_PORT_70000 so the browser dials the right one.
 : "${SELKIES_TURN_HOST:=$(pid1_env SELKIES_TURN_HOST)}"
 : "${SELKIES_TURN_HOST:=$(pid1_env PUBLIC_IPADDR)}"
 : "${DISPLAY_SIZEW:=$(pid1_env DISPLAY_SIZEW)}"
 : "${DISPLAY_SIZEH:=$(pid1_env DISPLAY_SIZEH)}"
+
+# Host paths Selkies entrypoint expects but cannot create as the unprivileged
+# desktop user (supervisord runs via runuser ubuntu). Without these, X fails with
+# "_XSERVTransmkdir: euid != 0", /dev/input setup errors out, and :20 never
+# comes up — "desktop session did not start in time".
+bootstrap_selkies_host() {
+  install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix
+  install -d -m 1777 /dev/input
+  touch /dev/input/js0 /dev/input/js1 /dev/input/js2 /dev/input/js3 2>/dev/null || true
+  chmod a+rw /dev/input/js* 2>/dev/null || true
+  # GLX desktop (nvidia-glx-desktop) starts Xorg on vt7 with -sharevts
+  ln -snf /dev/ptmx /dev/tty7 2>/dev/null || true
+}
+
+# Vast DNATs external PUBLIC_IP:VAST_TCP_PORT_70000 -> container :70000 where
+# coTURN listens. Selkies' rtc.json must expose the *external* port to the
+# browser; advertising :70000 when Vast mapped it to :21489 breaks ICE.
+map_vast_turn_ports() {
+  local ext_tcp
+  ext_tcp=$(pid1_env VAST_TCP_PORT_70000)
+  [ -n "$ext_tcp" ] && SELKIES_TURN_PORT="$ext_tcp"
+}
+map_vast_turn_ports
 
 # report <stage> [progress_pct] [message]
 report() {
@@ -245,6 +269,7 @@ if [ ! -f /etc/supervisord.conf ] || [ ! -x /usr/bin/supervisord ]; then
   fail "install_game" "Selkies image entrypoint (/usr/bin/supervisord) not found on this image"
 fi
 
+bootstrap_selkies_host
 install -d -o "$GAME_USER" -g "$GAME_USER" -m 700 "$RUNTIME_DIR"
 nohup runuser -u "$GAME_USER" -- env -i "${SELKIES_ENV[@]}" \
   /usr/bin/supervisord -c /etc/supervisord.conf > "$SELKIES_LOG" 2>&1 &
