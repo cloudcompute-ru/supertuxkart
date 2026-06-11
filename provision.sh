@@ -72,6 +72,10 @@ collect_diag() {
   {
     echo "===== date ====="; date
     echo "===== nvidia-smi ====="; nvidia-smi 2>&1 | head -n 40
+    echo "===== encoder ====="
+    echo "SELKIES_ENCODER=${SELKIES_ENCODER:-}"
+    ls -l /usr/lib/x86_64-linux-gnu/libnvidia-encode.so* 2>&1
+    gst-inspect-1.0 nvh264enc >/dev/null 2>&1 && echo "nvh264enc: usable" || echo "nvh264enc: NOT usable"
     echo "===== /tmp/.X11-unix ====="; ls -la /tmp/.X11-unix 2>&1
     echo "===== supervisorctl status ====="; supervisorctl -c /etc/supervisord.conf status 2>&1
     echo "===== /tmp/supervisord.log (tail) ====="; tail -n 100 /tmp/supervisord.log 2>&1
@@ -144,6 +148,37 @@ PY
   fi
   exit 1
 }
+
+# Pick a video encoder that actually works on THIS host.
+#
+# nvh264enc (NVENC) is preferred — hardware encode, low latency — but it only
+# works when the host's encode userspace (libnvidia-encode.so, mounted by the
+# nvidia container runtime when NVIDIA_DRIVER_CAPABILITIES includes `video`) is
+# present AND the GPU exposes a usable NVENC session. That varies host-to-host
+# on Vast; when it's missing, selkies-gstreamer fails to build its pipeline and
+# dies on the first client connect — the browser then sees the signalling socket
+# drop ("Server closed connection", retry loop) and never gets a stream.
+#
+# gst-inspect succeeds for nvh264enc only if the nvcodec plugin could open a
+# probe session, so it's an accurate "is NVENC usable" test. We give the encode
+# lib a brief window to appear (it's mounted at container create, but be safe),
+# then fall back to software x264enc so a stream ALWAYS comes up.
+pick_encoder() {
+  case "${SELKIES_ENCODER:-}" in
+    x264enc | vp8enc | vp9enc) return 0 ;;  # explicit non-NVENC override, honour it
+  esac
+  local i
+  for i in $(seq 1 15); do
+    ls /usr/lib/x86_64-linux-gnu/libnvidia-encode.so* >/dev/null 2>&1 && break
+    sleep 2
+  done
+  if gst-inspect-1.0 nvh264enc >/dev/null 2>&1; then
+    SELKIES_ENCODER="nvh264enc"
+  else
+    SELKIES_ENCODER="x264enc"
+  fi
+}
+pick_encoder
 
 # Clean, explicit environment for the desktop user. Using `runuser`
 # (root->ubuntu, no password) + `env -i` + this fixed list removes all ambiguity
